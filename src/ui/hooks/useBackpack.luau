@@ -28,31 +28,20 @@ local function useBackpack()
 	local backpack: Backpack = player:FindFirstChildOfClass("Backpack") :: any
 	local character = useCharacter()
 
-	local function onItemAdded(item: BackpackItem)
-		local char = untrack(character)
-		if item.Parent == char and untrack(states.equippedItem) ~= item then
-			states.equippedItem(item)
-		end
-
-		if untrack(itemsIndex)[item] then
-			return
-		end
-		slotManager.insertToLowestSlot(item)
-		events.backpackItemAdded.fire(item)
-	end
-
-	-- Removals are batched: the server can take dozens of items in one frame,
-	-- and writing `states.items` once per item re-ran every reader once per
-	-- item (a 200-500 ms hitch for ~60 items out of ~150). They queue here and
-	-- land in one write at the next resumption point.
+	-- Additions and removals are batched: the server can give or take dozens of
+	-- items in one frame, and writing `states.items` once per item re-ran every
+	-- reader once per item (a 140-500 ms hitch for ~60 items out of ~150). They
+	-- queue here and land in one write at the next resumption point.
 	local pendingRemovals: { BackpackItem } = {}
+	local pendingAdditions: { BackpackItem } = {}
 	local flushScheduled = false
 
-	local function flushRemovals()
+	local function flush()
 		flushScheduled = false
 		local char = untrack(character)
 		local slots = untrack(states.slots)
 		local currentItems = untrack(states.items)
+
 		local removed: { BackpackItem } = {}
 		local gapPastHotbar = false
 		for _, item in pendingRemovals do
@@ -72,21 +61,60 @@ local function useBackpack()
 			table.insert(removed, item)
 		end
 		table.clear(pendingRemovals)
-		if #removed == 0 then
-			return
-		end
-
 		if gapPastHotbar then
 			slotManager.closeInventoryGaps(currentItems)
+		end
+
+		local added: { BackpackItem } = {}
+		for _, item in pendingAdditions do
+			-- Gone again before the flush, or queued twice (backpack, then character).
+			local parent = item.Parent
+			if parent ~= backpack and parent ~= char then
+				continue
+			end
+			if slotManager.getItemIndex(item) then
+				continue
+			end
+			currentItems[slotManager.findLowestEmptySlot()] = item
+			table.insert(added, item)
+		end
+		table.clear(pendingAdditions)
+
+		if #removed == 0 and #added == 0 then
+			return
 		end
 		states.items(currentItems)
 		for _, item in removed do
 			events.backpackItemRemoved.fire(item)
 		end
+		for _, item in added do
+			events.backpackItemAdded.fire(item)
+		end
 
-		if table.maxn(untrack(states.items)) == 0 then
+		if #removed > 0 and table.maxn(untrack(states.items)) == 0 then
 			events.backpackEmpty.fire()
 		end
+	end
+
+	local function scheduleFlush()
+		if flushScheduled then
+			return
+		end
+		flushScheduled = true
+		task.defer(flush)
+	end
+
+	local function onItemAdded(item: BackpackItem)
+		local char = untrack(character)
+		if item.Parent == char and untrack(states.equippedItem) ~= item then
+			states.equippedItem(item)
+		end
+
+		if untrack(itemsIndex)[item] then
+			return
+		end
+		table.insert(pendingAdditions, item)
+		scheduleFlush()
 	end
 
 	local function onItemRemoved(item: BackpackItem)
@@ -103,10 +131,7 @@ local function useBackpack()
 			return
 		end
 		table.insert(pendingRemovals, item)
-		if not flushScheduled then
-			flushScheduled = true
-			task.defer(flushRemovals)
-		end
+		scheduleFlush()
 	end
 
 	local function onChildAdded(child: Instance)
@@ -140,12 +165,15 @@ local function useBackpack()
 
 		observeItems(char)
 		observeItems(backpack)
+		-- The loaded event hands out the items, so the spawn's batch lands first.
+		flush()
 
 		states.isBackpackLoaded(true)
 		events.backpackLoaded.fire(untrack(states.items))
 
 		cleanup(function()
 			table.clear(pendingRemovals)
+			table.clear(pendingAdditions)
 			states.equippedItem(nil :: any)
 			states.items({})
 			states.isBackpackLoaded(false)

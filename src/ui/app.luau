@@ -119,8 +119,9 @@ local function sling()
 
 		local equippedIndex: number? = nil
 		if equipped then
+			-- nil while the equipped item's addition waits for its batch.
 			equippedIndex = untrack(itemsIndex)[equipped]
-			if equippedIndex > slots then
+			if equippedIndex and equippedIndex > slots then
 				equippedIndex = nil
 			end
 		end
