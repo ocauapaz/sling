@@ -1,11 +1,12 @@
 [package]
-name = "encodedlux/sling"
-description = "A modern and reactive backpack system for Roblox."
-version = "0.1.5"
+name = "ocauapaz/sling"
+description = "Fork of encodedlux/sling (a modern and reactive backpack system for Roblox) that batches Backpack removals into one items write per resumption point, so removing dozens of Tools at once no longer re-runs every reader per Tool."
+version = "0.1.6"
 license = "MIT"
+authors = ["encodedlux", "ocauapaz"]
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
-repository = "https://github.com/encodedlux/sling"
+repository = "https://github.com/ocauapaz/sling"
 exclude = ["**"]
 include = [
     "LICENSE",

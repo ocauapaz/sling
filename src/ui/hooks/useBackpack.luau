@@ -41,6 +41,54 @@ local function useBackpack()
 		events.backpackItemAdded.fire(item)
 	end
 
+	-- Removals are batched: the server can take dozens of items in one frame,
+	-- and writing `states.items` once per item re-ran every reader once per
+	-- item (a 200-500 ms hitch for ~60 items out of ~150). They queue here and
+	-- land in one write at the next resumption point.
+	local pendingRemovals: { BackpackItem } = {}
+	local flushScheduled = false
+
+	local function flushRemovals()
+		flushScheduled = false
+		local char = untrack(character)
+		local slots = untrack(states.slots)
+		local currentItems = untrack(states.items)
+		local removed: { BackpackItem } = {}
+		local gapPastHotbar = false
+		for _, item in pendingRemovals do
+			-- Back in the backpack or the character before the flush: it stays.
+			local parent = item.Parent
+			if parent == backpack or parent == char then
+				continue
+			end
+			local index = slotManager.getItemIndex(item)
+			if not index then
+				continue
+			end
+			currentItems[index] = nil
+			if index > slots then
+				gapPastHotbar = true
+			end
+			table.insert(removed, item)
+		end
+		table.clear(pendingRemovals)
+		if #removed == 0 then
+			return
+		end
+
+		if gapPastHotbar then
+			slotManager.closeInventoryGaps(currentItems)
+		end
+		states.items(currentItems)
+		for _, item in removed do
+			events.backpackItemRemoved.fire(item)
+		end
+
+		if table.maxn(untrack(states.items)) == 0 then
+			events.backpackEmpty.fire()
+		end
+	end
+
 	local function onItemRemoved(item: BackpackItem)
 		local parent = item.Parent
 		local char = untrack(character)
@@ -51,15 +99,13 @@ local function useBackpack()
 		if parent == backpack or parent == char then
 			return
 		end
-		local index = untrack(itemsIndex)[item]
-		if not index then
+		if not untrack(itemsIndex)[item] then
 			return
 		end
-		slotManager.removeSlot(index)
-		events.backpackItemRemoved.fire(item)
-
-		if table.maxn(untrack(states.items)) == 0 then
-			events.backpackEmpty.fire()
+		table.insert(pendingRemovals, item)
+		if not flushScheduled then
+			flushScheduled = true
+			task.defer(flushRemovals)
 		end
 	end
 
@@ -99,6 +145,7 @@ local function useBackpack()
 		events.backpackLoaded.fire(untrack(states.items))
 
 		cleanup(function()
+			table.clear(pendingRemovals)
 			states.equippedItem(nil :: any)
 			states.items({})
 			states.isBackpackLoaded(false)
